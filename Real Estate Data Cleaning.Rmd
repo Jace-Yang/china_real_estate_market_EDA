@@ -1,0 +1,364 @@
+---
+output: html_document
+editor_options: 
+  chunk_output_type: console
+---
+# 数据清洗
+
+```{r}
+# main_raw <- fread("data/房天下2020年首页与详情页主数据.csv") %>% as_tibble
+# save(main_raw, file="data/房天下2020年首页与详情页主数据.RData")
+```
+
+## 主页数据
+```{r 各种辅助的函数}
+library(magrittr)
+get_digit <- function(str){
+  as.numeric(str_extract_all(str, "[0-9]+")[[1]])
+}
+
+mean_all_digit <- function(str){
+  as.character(mean(as.numeric(str_extract_all(str, "\\d+\\.*\\d*")[[1]])))
+}
+
+merge_3_tag <- function(x, y, z, a){
+  x = str_split(x, " ")[[1]]
+  y = str_split(y, " ")[[1]]
+  z = str_split(z, " ")[[1]]
+  #a = str_split(a, " ")[[1]]
+  return(paste0(unique(c(x, y,z)), collapse =  "、"))
+}
+
+merge_4_tag <- function(x, y, z, a){
+  x = str_split(x, " ")[[1]]
+  y = str_split(y, " ")[[1]]
+  z = str_split(z, " ")[[1]]
+  a = str_split(a, " ")[[1]]
+  return(paste0(unique(c(x, y,z, a)), collapse =  "、"))
+}
+main_raw %<>% as_tibble
+
+
+get_floor <- function(x){
+  candidate <- as.numeric(str_extract_all(x, "\\d+")[[1]])
+  
+  max(candidate[candidate < 70 & candidate >=1] , na.rm = T)
+}
+# get_floor("14幢16层高层住宅、4幢9-10层小高层住宅、10幢4层多层住宅")
+
+get_largest <- function(x){
+  candidate <- as.numeric(str_extract_all(x, "\\d+")[[1]])
+  max(candidate, na.rm = T)
+}
+
+
+check_notdigit <- function(df,...){
+  df %>%
+    filter(gsub("[0-9.-]", "", !!sym(...)) != "")}
+
+```
+
+```{r}
+# 还没好的
+
+# 
+# ## 交通
+main_raw %>%
+  as_tibble %>%
+  distinct_at(OBJ_SURROUNDIFO) #%>% writeEXCEL("整理交通关键词.xlsx")
+#   separate(sep = "。|；", col = OBJ_SURROUNDIFO, into = as.character(1:10)) %>% View
+
+    #%>%
+  #filter(grepl("\\d{4}",OBJ_DELIDATE)) %>% View
+
+main_raw %>%
+  #distinct_at(41) %>%  View
+  #mutate(test = str_extract(OBJ_DELIDATE, "\\d{6}")) #%>% writeEXCEL("检查年份是否对.xlsx")
+  
+  # 字短预处理
+  ## 统一替换奇怪的缺失标记
+  mutate_all(~ifelse(.x %in% c("均价约待定", "", "暂无", "暂无资料","undefined"), NA, .x)) %>%
+  
+  ## 需要提前转换的字段
+  mutate(OBJ_ESTYPE = gsub(",", " ", OBJ_ESTYPE)) %>%
+  rowwise() %>%
+  mutate(房屋特点 = merge_3_tag(OBJ_TAG, OBJ_ESTYPE, OBJ_FEATURE), # 这个标签的处理方式是因为首页和点击进去的不一样，所以需要拆开处理,然后OBJ_ESTYPE也会有重复的地方
+         平均产权年限 = mean_all_digit(OBJ_PROPYEAR),
+         评论数量 = get_digit(OBJ_POSTS_NUM)) %>% 
+    
+    
+  ungroup %>%
+  
+  ## 需要提前拆分的字段
+  separate(col = OBJ_SUBSCORE,
+           sep =  "[[:space:]]",
+           into = paste0(c("价格","地段","配套","交通","环境"),"评分")) %>% 
+  mutate_at(paste0(c("价格","地段","配套","交通","环境"),"评分"), ~as.numeric(gsub("[\u4e00-\u9fa5]+|：","",.x))) %>%
+  
+  
+  # 字段第一轮挨个处理
+  transmute(楼盘ID = OBJ_NUM,
+            楼盘名称 = OBJ_TIT,
+            楼盘网址 = OBJ_URL,
+            楼盘评分 = as.numeric(gsub("／5分", "", OBJ_SCORE)),
+            
+            房屋价格类型 = case_when(
+              grepl("元/平方米", OBJ_PRICE) & !grepl(".月",OBJ_PRICE) & !grepl(".天",OBJ_PRICE) ~ "每平米均价_元",
+              grepl("万元/套", OBJ_PRICE) & !grepl(".月",OBJ_PRICE) & !grepl(".天",OBJ_PRICE)  ~ "总价_万元",
+              grepl("元/套", OBJ_PRICE) & !grepl(".月",OBJ_PRICE) & !grepl(".天",OBJ_PRICE) ~ "总价_元", # .月 .天的是写字楼
+              T ~ "每平米均价_元"
+            ),
+            
+            OBJ_PRICE,
+            房屋价格 = case_when(
+              房屋价格类型 == "每平米均价_元" ~ gsub("价格：|均价约|元/平方米|起", "", OBJ_PRICE),
+              房屋价格类型 == "总价_万元" ~ paste0(gsub("均价约|价格：|万元/套|起", "", OBJ_PRICE)),
+              房屋价格类型 == "总价_元" ~ gsub("均价约|价格：|元/套", "", OBJ_PRICE),
+              T ~ OBJ_PRICE),
+            房屋面积 = OBJ_MAJORTYPE,
+            房屋地址 = OBJ_ADD,
+            房屋所在省 = 省,
+            房屋所在市 = 市,
+            房屋所在区 = 区,
+            #房屋地址 = OBJ_ADD,
+            房屋特点,
+            开盘时间 = OBJ_OPENDATE,
+            开盘年份 =	str_extract(开盘时间, "\\d{4}"),
+            开盘年份 =	ifelse(开盘年份 <= 2023 & 开盘年份>=2000, 开盘年份, NA),
+            
+            评论数量,
+            新闻标题 = OBJ_NEWS_TIT,
+            新闻URL = OBJ_NEWS_URL,
+            评价总分 = as.numeric(gsub(" |分","",OBJ_TOTSCORE)),
+            价格评分,
+            地段评分,
+            配套评分,
+            交通评分,
+            环境评分,
+            建筑特点 = gsub(" ", "、", OBJ_CONTYPE),
+            平均产权年限,
+            开发商 = OBJ_DEVELOPER,
+            装修情况 = gsub(",", "、", OBJ_DECORATION),
+            环线位置 = OBJ_LOOPLOCATION,
+            销售状态 = OBJ_SALESTATE,
+            交房年份 =	str_extract(OBJ_DELIDATE, "\\d{4}"),
+            
+            
+            占地面积 = as.numeric(gsub("平方米","",OBJ_TOTLANDAREA)),
+            容积率 = as.numeric(OBJ_FAR),
+            
+            总户数 = as.numeric(gsub("户","",OBJ_HOUSENUM)),
+            每平米每月物业费 = as.numeric(gsub("元/㎡·月","",OBJ_ESCOST)),
+            
+            楼 = gsub("一","1",OBJ_FLOORINFO),
+            楼 = gsub("二","2",楼),
+            楼 = gsub("三","3",楼),
+            楼 = gsub("四","4",楼),
+            楼 = gsub("五","5",楼),
+            楼 = gsub("六","6",楼),
+            楼 = gsub("七","7",楼),
+            楼 = gsub("八","8",楼),
+            楼 = gsub("九","9",楼),
+            楼 = gsub("十","10",楼),
+            建筑面积 = as.numeric(gsub("平方米","",OBJ_TOTCONAREA)),
+            绿化率 = as.numeric(gsub("%","",OBJ_GR))/100, #变成小数
+            楼栋总数 = gsub("栋","",OBJ_BUILDINGNUM), # 一会还需要仔细处理一下 有的会写总栋数！
+            物业公司 = gsub(" ", "", OBJ_ESCOMP),
+            项目简介 = OBJ_INTRO
+            ) -> temp
+    #普通住宅：21000元/平方米花园洋房：230万元/套起
+
+  # 字段第二轮校准
+temp %>%
+  rowwise() %>%
+  
+    
+  mutate(房屋价格 = ifelse(
+    grepl("元/平方米" ,OBJ_PRICE) & grepl("万元/套" ,OBJ_PRICE), 
+    gsub("\\d+\\.*\\d*万元/套", "", OBJ_PRICE),
+    房屋价格)) %>% 
+  
+  mutate_at(c("房屋价格","房屋面积"), mean_all_digit) %>% 
+  #filter((grepl("元/平方米" ,OBJ_PRICE)) & grepl("万元/套" ,OBJ_PRICE)) %>%  
+  
+  mutate(楼 = get_floor(楼)) %>% # 这个指标非常不可靠
+  mutate(楼栋总数 = get_largest(楼栋总数)) %>% 
+
+
+  mutate_at(c("房屋面积"), as.numeric) %>% 
+  
+  filter(!(房屋价格类型 == "每平米均价_元" & as.numeric(房屋价格) < 1000 )) %>% 
+  filter(as.numeric(房屋面积) >= 5) %>% # 房屋面积有几个1平米的是几个意思？删了！
+  ungroup -> current #%>%
+
+# 第三轮: 一些字段需要处理三步
+current %>%
+  mutate(房屋价格 = ifelse(房屋价格类型 == "总价_万元", 
+                            as.numeric(房屋价格) * 10000 / 房屋面积,
+                            as.numeric(房屋价格))) %>% 
+  select(-c(OBJ_PRICE,房屋价格类型)) -> main_clean
+
+# 第四轮：单独处理的字段加入一下
+## 4.1 主力户型数据
+main_raw %>%
+  distinct(OBJ_NUM, OBJ_LAYCOUNT) %>%
+  separate_rows(2, sep = '[[:space:]]+') %>%
+  mutate(value = map_chr(OBJ_LAYCOUNT, ~str_extract(.x, '\\d+'))) %>%
+  filter(!is.na(value), grepl('居', OBJ_LAYCOUNT)) %>%
+  mutate(OBJ_LAYCOUNT = map_chr(OBJ_LAYCOUNT, ~str_extract(.x, '.*(?=\\()'))) %>%
+  pivot_wider(names_from = OBJ_LAYCOUNT, values_from = value) %>%
+  rename_at(2:ncol(.), ~paste0("主力户型_",.x)) %>%
+  rename(楼盘ID = OBJ_NUM) -> main_layout
+
+## 4.2 总户数数据
+main_raw %>%
+  mutate(总户数 = as.numeric(gsub("户","",OBJ_HOUSENUM))) %>% 
+  distinct(OBJ_NUM, 总户数, OBJ_PARKINGNUM) -> data_park 
+
+#data_park %>% writeEXCEL("tz帮忙看看停车场.xlsx")
+data_park %>%
+  
+  # 1. 不带:|：|比号的 肯定没有比例数据 只需要提取：
+  filter(!grepl(":|：|比|\\.", OBJ_PARKINGNUM)) -> main_raw_1
+
+main_raw_1 %<>%
+    rowwise() %>%
+    mutate(出现数字的个数 = length(str_extract_all(OBJ_PARKINGNUM, '\\d+')[[1]] ))
+  
+  # 1.1 如果出现了三个以上数字，最大的那个认为就是总数字
+  main_raw_1 %>%
+    filter(出现数字的个数>=3) -> main_raw_1_1
+  main_raw_1_1 %>%
+    mutate(停车位总个数 =  max(as.numeric(str_extract_all(OBJ_PARKINGNUM, '\\d+')[[1]])),
+           匹配模式 = "出现了三个以上数字，最大的那个认为就是总车位数") #%>% View
+  
+## 4.3 评论页中的热评个数
+fread("data/房天下2020年评论数据.csv") -> review_raw
+review_raw  %>% 
+  
+  distinct(OBJ_NUM, REV_TYPE) %>%
+  separate_rows(2, sep = '[[:space:]]+') %>%
+  mutate(value = map_chr(REV_TYPE, ~str_extract(.x, '\\d+'))) %>%
+  filter(!is.na(value), grepl('热门', REV_TYPE)) %>%
+  select(1,3) %>%
+  #mutate(REV_TYPE = map_chr(REV_TYPE, ~str_extract(.x, '.*(?=\\()'))) %>%
+  #pivot_wider(names_from = REV_TYPE, values_from = value) %>%
+  `colnames<-`(c("楼盘ID", "热门评论个数")) -> comment_number
+
+## 4.4 城市等级划分
+read_excel("data/最新全国城市等级划分2020.xlsx", skip=1) %>%
+  select(房屋所在市 = 城市, 城市等级 = 5) -> city_info
+read_excel("data/房天下缩写对应规则.xlsx") %>%
+  distinct(省_, 省,市) %>% filter(!is.na(省)) -> mapper
+
+
+### 省份矫准
+# main_clean %>%
+# 
+#   distinct_at(3) %>%
+#   mutate(省_ = gsub("https://","",楼盘网址)) %>% 
+#   
+#   
+#   
+#   mutate(省_ = sub("\\.newhouse\\.fang\\.com.*", "", 省_)) %>%
+#   group_by(省_) %>%
+#   mutate(个数 = n()) %>%
+#   arrange(-个数) %>%
+#   filter(个数>100) %>%
+#   filter(row_number()==1) %>% get_DT()
+#           
+#             
+#             
+#   distinct(楼盘网址,省_,省__) %>% 
+#   get_DT()
+
+main_clean %>%   
+  mutate(省_ = gsub("https://","",楼盘网址))  %>%
+  mutate(省_ = sub("\\.newhouse\\.fang\\.com.*", "", 省_)) %>%
+  left_join(mapper) %>%
+  mutate(房屋所在省 = ifelse(!is.na(省) & 省!="", 省,房屋所在省)) %>%
+  mutate(房屋所在市 = ifelse(!is.na(市) & 市!="", 市,房屋所在市)) %>%
+  select(-c(省_, 省, 市)) %>%
+  mutate(房屋所在市 = ifelse(房屋所在市 == "市辖区" | 房屋所在市 =="县", 房屋所在省,房屋所在市)) %>%
+
+## 叫准个别匹配错误
+
+  mutate(房屋所在市 = ifelse(房屋价格>100000 & grepl("北京",楼盘名称),"北京市",房屋所在市)) %>%
+  mutate(房屋所在省 = ifelse(房屋价格>100000 & grepl("北京",楼盘名称),"北京市",房屋所在省))  -> main_clean_2
+
+
+main_clean_2 %>%
+  distinct(楼盘ID,房屋所在市) %>%
+  left_join(city_info) %>%
+  mutate(城市等级 = ifelse(is.na(城市等级) & !is.na(房屋所在市),"五线",城市等级))  %>%
+  mutate(城市等级 = factor(城市等级,
+                           levels = c("超一线","一线","二线","三线","四线","五线"))) -> city_df
+  
+  # filter(!is.na(城市等级))
+  #mutate(城市等级 = ifelse(城市等级 %in% c("三线","四线","五线"), "三四五线",城市等级)) 
+
+## 4.5 周边设施标签
+readEXCEL("周边设施规则试试看-V3.xlsx") -> rules
+rules$关键词规则 %<>%  filter(!is.na(设施) & !is.na(关键词)) 
+
+rules$关键词规则 %>% select_list("关键词") -> key_words
+rules$关键词规则 %>% select_list("设施") -> feature_tag
+
+rules_plus <- c(
+paste0(paste0("汽车", c("东","南","西","北"),"站"),collapse = "|"),
+paste0("\\d路|\\d专线"))
+
+tag_plus <- c("客运站","公交")
+
+key_words <- c(key_words, rules_plus)
+feature_tag <- c(feature_tag, tag_plus)
+# rules = c("\\d路")
+# grepl("\\d路", "21路")
+# grepl("\\d路", "21路")
+
+main_raw %>%
+  distinct(OBJ_NUM, OBJ_SURROUNDIFO) %>%
+  
+  # 剔除关键词
+  mutate(OBJ_SURROUNDIFO = gsub(paste0(rules$剔除 %>% distinct_list("需扣除的字段") ,collapse = "|"),"",OBJ_SURROUNDIFO)) -> temp
+  
+  
+  # 识别关键词
+  for(i in 1:length(key_words)){
+    print(i)
+    temp %<>%
+      mutate(!!sym(feature_tag[i]) := ifelse(grepl(key_words[i], OBJ_SURROUNDIFO), 1,0))
+  }
+# temp %>% writeEXCEL("规则待校验V3_加入了正则规则.xlsx")
+temp %>% 
+  select(-2) %>% rename_at(1,~"楼盘ID") -> df_feature
+
+main_clean_2 %>%
+  left_join(main_layout) %>%
+  left_join(comment_number) %>%
+  left_join(city_df) %>%
+  left_join(df_feature) %>%
+  relocate(城市等级,.after = "房屋所在市") -> house_df
+  
+
+#house_df %>% writeEXCEL("data/清洗后主页数据V2_加了城市等级和省市还差周边设施.xlsx")
+save(house_df, file = "data/矫正地址V4.Rdata")
+
+  
+# current %>% 
+# 
+# writeEXCEL("小胡再看看.xlsx")
+  #writeEXCEL("小胡帮帮忙1_可以帮我看看房屋价格和房屋价格类型这两列对不对嘛.xlsx")
+  # 有15个价格非常低的很可能是租金！
+
+
+  # filter(!is.na(房屋价格) & 
+  #        !grepl("元/平方米", 房屋价格) & 
+  #        !grepl("万元/套", 房屋价格) &
+  #        !grepl("元/套", 房屋价格) ) %>% View #除了这三种之外的十几个房子是租金的价格，所以予以删除
+  
+
+  
+```
+
+

@@ -1,0 +1,972 @@
+---
+title: "房天下数据"
+date: "2021年5月3日"
+output: 
+  html_document:
+    toc: yes
+    number_sections: true
+    toc_float:
+      collapsed: true
+    toc_depth: 5
+    code_folding: hide
+    css: changer.css
+    fig_caption: true
+  chunk_output_type: console
+editor_options: 
+  chunk_output_type: console
+---
+
+```{r}
+options(warn = -1)
+library(knitr)
+knitr::opts_chunk$set(message = FALSE)
+```
+
+
+- 小组：Group2
+- 代码语言：R
+- 结果呈现工具：Rmarkdown
+
+    - 查看代码的方式：点击每个section右上角的`code`即可看到源代码
+
+```{r setup, include=FALSE}
+setwd(dirname(rstudioapi::getActiveDocumentContext()$path))
+
+source("FUNCS.R")
+source("FUNCS_plotly.R")
+source("FUNCS_ggplot2.R")
+
+library(PupillometryR)
+library(esquisse)
+library(corrplot)       # used for making correlation plot.
+library(ggplot2)        # used for plotting
+library(psych)          # used for Factor Analysis
+library(car)            # used for calculating VIF, to check multicollinearity
+library(factoextra) # clustering algorithms & visualization
+# library(caTools)        # used for partitioning the data
+
+replace_na <- tidyr::replace_na
+
+load("data/清洗后主页数据V2_加了城市等级和省市还差周边设施.Rdata")
+load("data/房天下2020年首页与详情页主数据.RData")
+
+
+
+my_scale_fill_color <- function(fig, color = my_pick[-1]){
+  fig +
+    scale_fill_manual( values = color,na.value = "#5f5f5f") +
+    scale_color_manual(values =color,na.value = "#5f5f5f") 
+}
+
+price_filter <- function(df){
+  df %>% filter(房屋价格<200000)
+}
+
+#library(export)
+
+saveppt <- function(img,
+                    path,
+                    append=T,
+                    
+                    width = 6.5,
+                    height = 6.2/2){
+  
+  graph2ppt(
+    x = img,
+    file = path,
+    width = width,
+    height = height,
+    append = append,
+    paper = 'A4',
+    #center = T,
+    # offx = 0,
+    # offy = 2,
+    vector.graphic = TRUE,
+    margins = c(top = 0, right = 0, bottom = 0, left = 0))
+}
+
+
+```
+
+# Micro
+
+## 交通与地段
+
+### 城市等级与与价格
+```{r}
+house_df  %>%
+  price_filter %>%
+  #filter(城市等级!="超一线" | 房屋所在市 != "深圳市") %>%
+  #filter(城市等级!="五线" | 房屋价格<70000) %>%
+ggplot() +
+  aes(x = `城市等级`,
+      y = `房屋价格`,
+      fill = 城市等级) +
+  geom_flat_violin(position = position_nudge(x = .2, y = 0), 
+                   trim = TRUE, 
+                   alpha = .4, 
+                   scale = "width") +
+  geom_point(aes(color = 城市等级), 
+             position = position_jitter(w = .15, h = 0.9), 
+             size = 1, 
+             alpha = 0.04) +
+  geom_boxplot(width = .3, 
+               outlier.shape = NA,
+               alpha = 0.5) +
+  bigy+
+  
+  ppt_theme  + ylab("House Price") + xlab("Tier of the city") -> p
+
+my_scale_fill_color(p)  -> p
+p
+
+ggsave("plot/micro/房价vs城市等级.png",
+       p,
+       units = "in",
+       device = "png",
+       dpi = 350,
+       width = 9,
+       bg = "transparent",
+       height = 4)
+  
+```
+
+### 周边设施
+#### 有无的统计
+```{r}
+house_df %>%
+  select(楼盘ID, 学校:客运站) %>%
+  pivot_longer(2:ncol(.)) %>%
+  group_by(name) %>%
+  summarise(有 = sum(value),
+            总 = n()) %>%
+  mutate(无 = 总 - 有) %>%
+  select(-无) -> data
+
+data %>% 
+  arrange(-有) %>%
+  as.factor_at("name") -> df
+df %>%
+ggplot() +
+  aes(x = name,
+      fill = name,
+      y = 有) +
+  geom_bar(stat = "identity")+ 
+  geom_abline(slope = 0,
+              linetype="dashed",
+         intercept = 38000) +
+  ylab("Amount") +
+  
+  ppt_theme +
+  scale_y_continuous(expand = c(0, 0), 
+                     limits = c(0,40000),
+                     n.break = 7) +
+  #coord_flip() +
+  guides(fill = "none") +
+  theme(axis.text.x=element_text(angle=90)) -> p
+  
+my_scale_fill_color(p,color = colorRampPalette(brewer.pal(11, "Spectral"))(nrow(df)))
+```
+
+#### 有无对房价的影响
+```{r}
+
+house_df %>%
+  select(楼盘ID, 学校:客运站) %>%
+  pivot_longer(2:ncol(.)) %>%
+  left_join(house_df %>% select(楼盘ID, 房屋价格)) %>%
+  group_by(name,value) %>%
+  summarise(房屋价格 = mean(房屋价格, na.rm=T)) %>%
+  pivot_wider(id_cols = name,
+              values_from = 房屋价格,
+              names_from = value) %>%
+  transmute(`Price Impact` = `1`-`0`) %>%
+  mutate(name = factor(name, levels = data %>% arrange(-有) %>% distinct_list("name") )) %>%
+  arrange(-`Price Impact` ) %>%
+  
+  
+ggplot() +
+  aes(x = name,
+      fill = name,
+      y = `Price Impact`) +
+  
+  geom_bar(position = "dodge",
+           stat = "identity",
+           show.legend = F,
+           width = 0.8) +
+  
+  coord_flip()  +
+  geom_vline(xintercept = 0) +
+  ppt_theme ->p
+my_scale_fill_color(p,color = colorRampPalette(brewer.pal(11, "Spectral"))(nrow(df)))
+
+
+```
+
+## 房产属性
+
+### 楼层特点
+#### 楼层1
+```{r}
+house_df %>%
+  distinct(楼盘ID, 建筑特点) %>%
+  separate_rows(建筑特点,sep = "、") %>%
+  mutate(ref = 1) %>%
+  
+  group_by(建筑特点) %>%
+  #filter(sum(ref) > 3000) %>%
+  filter(!is.na(建筑特点)) %>%
+  filter(建筑特点!= "NA") %>%
+  ungroup %>%
+  pivot_wider(id_cols = 楼盘ID,
+              names_from = 建筑特点,
+              values_from = ref) %>% 
+  left_join(house_df %>% select(-酒店)) -> try
+
+
+楼层特点_index = c("低层","多层","小高层","高层","超高层")
+data_list <- list()
+for(index in 楼层特点_index){
+  try %>% 
+    filter(!!sym(index)=="1") %>% 
+    mutate(楼层特点 = index) -> data_list[[index]]
+}
+bind_rows(data_list) %>%
+  mutate(楼层特点 = factor(楼层特点,levels = 楼层特点_index)) %>%
+  filter(房屋价格 < 200000) %>%
+  #mutate(房屋价格 = log(房屋价格)) %>%
+  ggplot() +
+  aes(x = `楼层特点`,
+      y = `房屋价格`,
+      fill = 楼层特点) +
+  geom_flat_violin(position = position_nudge(x = .2, y = 0),
+                   trim = TRUE,
+                   alpha = 0.5,
+                   scale = "width") +
+   geom_point(aes(color = 楼层特点), 
+             position = position_jitter(w = .15, h = 0.9),
+             size = 1,
+             alpha = 0.05) +
+  geom_boxplot(width = .3,
+               outlier.shape = NA,
+               alpha = 0.8) +
+  #bigy+
+  scale_y_log10(breaks = trans_breaks("log10", function(x) 10^x, n = 10),
+                 labels = trans_format("log10", math_format(10^.x))) +
+  
+#  ylim(0,50000) +
+  ppt_theme -> p
+my_scale_fill_color(p, my_pick2[1:5]) -> p
+p
+
+ggsave("plot/micro/房产属性-楼层特点1.png",
+       p,
+       units = "in",
+       device = "png",
+       dpi = 350,
+       width = 6,
+       bg = "transparent",
+       height = 5)
+  
+```
+
+
+#### 楼层2
+```{r}
+
+
+楼层特点_index = c("板楼","板塔结合","塔楼","合院", 
+               
+               "大平层", "联排","独栋","商住别墅")
+data_list <- list()
+for(index in 楼层特点_index){
+  try %>% 
+    filter(!!sym(index)=="1") %>% 
+    mutate(楼层特点 = index) -> data_list[[index]]
+}
+bind_rows(data_list) %>%
+  mutate(楼层特点 = factor(楼层特点,levels = 楼层特点_index)) %>%
+  filter(房屋价格 < 200000) %>%
+  #mutate(房屋价格 = log(房屋价格)) %>%
+  ggplot() +
+  aes(x = `楼层特点`,
+      y = `房屋价格`,
+      fill = 楼层特点) +
+  geom_flat_violin(position = position_nudge(x = .2, y = 0),
+                   trim = TRUE,
+                   alpha = 0.5,
+                   scale = "width") +
+   geom_point(aes(color = 楼层特点), 
+             position = position_jitter(w = .15, h = 0.9),
+             size = 1,
+             alpha = 0.05) +
+  geom_boxplot(width = .3,
+               outlier.shape = NA,
+               alpha = 0.8) +
+  get_bigy(n.breaks = 10)+
+  # scale_y_log10(breaks = trans_breaks("log10", function(x) 10^x, n = 10),
+  #                labels = trans_format("log10", math_format(10^.x))) +
+  
+#  ylim(0,50000) +
+  ppt_theme -> p
+my_scale_fill_color(p, my_pick2) -> p
+
+ggsave("plot/micro/房产属性-楼层特点2.png",
+       p,
+       units = "in",
+       device = "png",
+       dpi = 350,
+       width = 6,
+       bg = "transparent",
+       height = 5)
+```
+
+### 开盘日期与价格
+
+```{r}
+house_df %>%
+  filter(房屋价格<200000) %>%
+  filter(!is.na(房屋价格),
+         !is.na(开盘年份),) %>%
+  #filter(看盘)
+  #mutate(房屋价格 = log(房屋价格)) %>%
+ #filter(楼 >= 69L & 楼 <= NA_integer_) %>%
+ #filter(楼栋总数 >= 33559L & 楼栋总数 <= 
+ #NA_integer_) %>%
+
+ggplot() +
+  aes(x = `开盘年份`,
+      y = `房屋价格`,
+      fill = 开盘年份) +
+  # geom_flat_violin(position = position_nudge(x = .2, y = 0), 
+  #                  trim = TRUE, 
+  #                  alpha = .4, 
+  #                  scale = "width") +
+  # geom_point(aes(color = 城市等级),
+  #            position = position_jitter(w = .15, 
+  #                                       h = .05),
+  #            size = 1,
+  #            alpha = 0.1) +
+  geom_boxplot(width = 0.7, 
+               outlier.shape = NA,
+               alpha = 0.5) +
+  scale_y_continuous(expand = c(0, 0), 
+                     limits = c(0,21000),
+                     n.breaks = 10,
+                     labels = addUnits_cn_best) +
+  # scale_y_log10(breaks = trans_breaks("log10", function(x) 10^x, n = 10),
+  #               labels = trans_format("log10", math_format(10^.x))) +
+  ppt_theme  + ylab("House Price") -> p
+
+my_scale_fill_color(p, c(my_pick,my_pick2)) -> p
+
+ggsave("plot/micro/房产属性-开盘日期.png",
+       p,
+       units = "in",
+       device = "png",
+       dpi = 350,
+       width = 9,
+       bg = "transparent",
+       height = 4)
+
+```
+
+
+
+
+
+### 环境
+#### 环境分
+```{r}
+house_df %>%
+  filter(房屋价格 < 200000
+             ) %>%
+
+  ggplot() +
+  aes(x = `环境评分`,
+      y = `房屋价格`) +
+  
+  geom_point(#aes(color = 地段评分),
+             #position = position_jitter(w = .15, h = 0.9),
+             size = 1,
+             alpha = 0.2) +
+  geom_smooth(method = "gam", 
+              se = T,
+              formula = y ~ x, size = 1) +
+  bigy +
+  ppt_theme -> p
+ggsave("plot/micro/房产属性-环境.png",
+       p,
+       units = "in",
+       device = "png",
+       dpi = 350,
+       width = 4,
+       bg = "transparent",
+       height = 4)
+```
+
+
+#### 北上广深
+```{r}
+house_df %>% 
+  filter(房屋所在省 == "北京市" | 房屋所在省 == "上海市" |  房屋所在市 == "广州市"|房屋所在市 == "深圳市" ) %>%
+  mutate(城市 = ifelse(房屋所在省 == "北京市" | 房屋所在省 == "上海市",
+                       房屋所在省,
+                       房屋所在市)) %>%
+  mutate(城市 = factor(城市,
+                       level = c("北京市","上海市","广州市","深圳市"))) %>%
+
+ggplot() +
+  aes(x = `城市`,
+      y = `环境评分`,
+      fill = 城市) +
+  geom_flat_violin(position = position_nudge(x = .2, y = 0), 
+                   trim = TRUE, 
+                   alpha = .4, 
+                   scale = "width") +
+  geom_point(aes(color = 城市), 
+             position = position_jitter(w = .15, h = 0.9), 
+             size = 1, 
+             alpha = 0.1) +
+  geom_boxplot(width = .3, 
+               outlier.shape = NA,
+               alpha = 0.5) +
+  bigy +
+  ppt_theme  -> p
+my_scale_fill_color(p,my_pick2) -> p
+ggsave("plot/micro/房产属性-北上环境.png",
+       p,
+       units = "in",
+       device = "png",
+       dpi = 350,
+       width = 5.2,
+       bg = "transparent",
+       height = 4)
+
+```
+
+
+
+### 容积率
+
+
+
+```{r}
+house_df %>%
+  filter(建筑面积<5e7) %>%
+  
+  group_by(房屋所在省) %>%
+  summarise(平均容积率 = mean(容积率, na.rm =T),
+            平均楼盘占地面积 = mean(建筑面积, na.rm =T),
+            样本中楼盘个数 = n()) %>%
+  ggplot() +
+  aes(
+    x = 平均容积率,
+    y = 平均楼盘占地面积
+  ) + geom_point(aes(size = 样本中楼盘个数,
+                     color = 房屋所在省)) + 
+  geom_text_repel(aes(label = 房屋所在省),
+                               family = "Microsoft YaHei") + ppt_theme +
+  scale_x_continuous(n.break = 7) +
+  guides(color = "none") +
+  ggtitle("") +
+  get_bigy(limits = c(0,770000),n.breaks = 9) -> p
+my_scale_fill_color(p, color = rep(c(my_pick,my_pick2),2)) -> p
+p
+ggsave("plot/micro/楼层高度和产地面积分布图.png",
+       p,
+       units = "in",
+       device = "png",
+       dpi = 350,
+       width = 9,
+       bg = "transparent",
+       height = 4)
+
+
+```
+
+### 物业费和总户数
+```{r}
+house_df %>%
+  filter(房屋价格 < 200000, 每平米每月物业费 < 50) %>%
+  ggplot() +
+  aes(x = `每平米每月物业费`,
+      color = 城市等级,
+      y = `房屋价格`) +
+  
+  geom_point(
+             #position = position_jitter(w = .15, h = 0.9),
+             size = 1,
+             alpha = 0.2) +
+  geom_smooth(method = "gam", 
+              se = T,
+              formula = y ~ x, size = 1) +
+  bigy +
+  ppt_theme -> p
+p <- my_scale_fill_color(p)
+p
+ggsave("plot/micro/物业费用.png",
+       p,
+       units = "in",
+       device = "png",
+       dpi = 350,
+       width = 4.5,
+       bg = "transparent",
+       height = 4)
+
+```
+```{r}
+house_df %>%
+  filter(!is.infinite(楼栋总数)) %>%
+  filter(!is.infinite(楼)) %>%
+  filter(建筑面积<5e7) %>%
+  #filter(房屋所在省!="台湾省") %>%
+  group_by(房屋所在省) %>%
+  filter(每平米每月物业费 < 5000) %>%
+  summarise(楼 = mean(楼, na.rm =T),
+            平均每平米每月物业费 = mean(每平米每月物业费, na.rm=T),
+            #平均楼栋数 = mean(楼栋总数, na.rm=T),
+            平均总户数 = mean(总户数, na.rm =T),
+            房屋个数 = n()) %>%
+  ggplot() +
+  aes(
+    x = 平均每平米每月物业费,
+    y = 平均总户数,
+    
+  ) + geom_point(aes(color = 房屋所在省,size = 房屋个数)) + geom_text_repel(aes(label = 房屋所在省),
+                                                                       na.rm= T,
+                                                                       family = "Microsoft YaHei") + ppt_theme +
+  scale_x_continuous(n.break = 7) +
+  
+  guides(color = "none") +
+  scale_y_continuous(labels = addUnits_cn_best,
+                     n.breaks = 9)    -> p
+my_scale_fill_color(p, color = rep(c(my_pick,my_pick2),2)) -> p
+
+ggsave("plot/micro/物业费和总户数.png",
+       p,
+       units = "in",
+       device = "png",
+       dpi = 350,
+       width = 5.5,
+       bg = "transparent",
+       height = 4)
+
+```
+## 房屋属性
+### 面积
+```{r}
+house_df %>%
+  filter(房屋价格 < 200000,
+             房屋面积 < 1000,
+         评价总分>2) %>%
+  select(房屋价格, 房屋面积,城市等级,
+             评价总分:环境评分) %>%
+  ggplot() +
+  aes(x = `房屋面积`,
+      y = `房屋价格`,
+      color = 城市等级) +
+  
+  geom_point(#aes(color = 地段评分),
+             #position = position_jitter(w = .15, h = 0.9),
+             size = 1,
+             alpha = 0.2) +
+  geom_smooth(method = "gam", 
+              se = T,
+              formula = y ~ x, size = 1) +
+  bigy +
+  ppt_theme -> p
+p <- my_scale_fill_color(p)
+ggsave("plot/micro/面积与房价关系.png",
+       p,
+       units = "in",
+       device = "png",
+       dpi = 350,
+       width = 4.5,
+       bg = "transparent",
+       height = 4)
+
+```
+
+```{r}
+house_df %>%
+  #filter(房屋所在省 == "安徽省") %>% arrange(-房屋面积) %>% View
+  filter(房屋面积<20000) %>%
+  #filter(房屋价格<200000) %>%
+  group_by(房屋所在省) %>%
+  
+  summarise(平均房屋面积 = mean(房屋面积, na.rm =T),
+            平均房价 = mean(房屋价格, na.rm =T),
+            样本中楼盘个数 = n()) %>%
+  ggplot() +
+  aes(
+    x = 平均房屋面积,
+    y = 平均房价
+  ) + geom_point(aes(size = 样本中楼盘个数,
+                     color = 房屋所在省)) + 
+  geom_text_repel(aes(label = 房屋所在省),
+                               family = "Microsoft YaHei") + ppt_theme +
+  # scale_x_continuous(n.break = 7) +
+  guides(color = "none") +
+  ggtitle("") +
+    scale_x_continuous( labels = addUnits_cn_best,
+                     n.breaks = 9) +
+  scale_y_continuous(labels = addUnits_cn_best,
+                     n.breaks = 9) -> p
+my_scale_fill_color(p, color = rep(c(my_pick,my_pick2),2)) -> p
+p
+ggsave("plot/micro/楼盘面积与房价.png",
+       p,
+       units = "in",
+       device = "png",
+       dpi = 350,
+       width = 5.5,
+       bg = "transparent",
+       height = 4)
+```
+
+### 户型
+```{r}
+house_df %>%
+  dplyr::select(楼盘ID,城市等级,主力户型_二居:主力户型_一居) %>%
+  pivot_longer(3:ncol(.)) %>%
+  filter(!is.na(value)) %>%
+  transmute(楼盘ID,
+            城市等级,
+            户型 = gsub("主力户型_","",name),
+            户型 = factor(户型,levels= c("一居","二居","三居","四居","五居",
+                                     "五居以上"))) -> temp
+
+mosaic(户型 ~ 城市等级, data = temp, zero_size = 0,
+       highlighting_direction = "right",
+       shade = TRUE,
+       rot_labels=c(30,90,0,0),
+            gp = shading_hcl,
+            #gp = shading_hcl(HairEyeColor, lty = 1:2),
+            gp_labels = gpar(fontsize = 9, fontfamily = "Microsoft YaHei"),
+          
+            gp_varnames = gpar(fontsize = 12, fontfamily = "Microsoft YaHei"))
+
+
+temp %>%
+  left_join(house_df %>% select(楼盘ID, 房屋所在省, 房屋所在市)) %>%
+  filter(!is.na(户型)) %>%
+  filter(房屋所在省 == "北京市" | 房屋所在省 == "上海市" |  房屋所在市 == "广州市"|房屋所在市 == "深圳市" ) %>%
+    mutate(城市 = ifelse(房屋所在省 == "北京市" | 房屋所在省 == "上海市",
+                       房屋所在省,
+                       房屋所在市)) %>%
+  mutate(城市 = factor(城市,
+                       level = c("北京市","上海市","广州市","深圳市"))) %>%
+  group_by(城市,户型) %>%
+  summarise(户型占比 = n()) %>%
+  group_by(城市) %>%
+  mutate(户型占比 = 户型占比/sum(户型占比)) -> plot_data
+plot_data %>%
+  tidyr::spread(城市,户型占比) %>%
+  arrange(desc(户型)) %>%
+    mutate(y = cumsum(`北京市`),
+         yend = cumsum(`上海市`)) %>% 
+  add_row(y = 0, yend = 0) -> helper1
+
+plot_data %>%
+  tidyr::spread(城市,户型占比) %>%
+  arrange(desc(户型)) %>%
+    mutate(y = cumsum(`上海市`),
+         yend = cumsum(`广州市`)) %>% 
+  add_row(y = 0, yend = 0) -> helper2
+
+plot_data %>%
+  tidyr::spread(城市,户型占比) %>%
+  arrange(desc(户型)) %>%
+    mutate(y = cumsum(`广州市`),
+         yend = cumsum(`深圳市`)) %>% 
+  add_row(y = 0, yend = 0) -> helper3
+
+plot_data %>%
+ggplot() +
+  aes(x = 城市, 
+      y = 户型占比,
+      fill = 户型) + 
+  geom_bar(stat="identity",width = 0.5) + 
+  geom_text(data = plot_data,
+            position=position_stack(vjust=0.5),
+            aes(label=paste0(sprintf("%1.1f", 户型占比*100),"%"))) +
+  geom_segment(data = helper,colour = "black",
+               aes(x = 1 + 0.5/2,
+                   xend = 2 - 0.5/2,
+                   y = y,
+                   yend = yend)) +
+  geom_segment(data = helper2,colour = "black",
+               aes(x = 2 + 0.5/2,
+                   xend = 3 - 0.5/2,
+                   y = y,
+                   yend = yend)) +
+  geom_segment(data = helper3,colour = "black",
+               aes(x = 3 + 0.5/2,
+                   xend = 4 - 0.5/2,
+                   y = y,
+                   yend = yend)) +
+  
+  ppt_theme + 
+  only_x +
+  scale_y_continuous(
+    expand = c(NA,0.5),
+    limits = c(0,1.05),
+    labels = scales::percent,
+  breaks = scales::breaks_pretty(7)) +
+  coord_flip() +
+ scale_fill_manual( values = my_pick2,na.value = "#5f5f5f",breaks=c("一居","二居","三居","四居","五居","五居以上")) -> p 
+    
+
+ggsave("plot/micro/北上广深户型.png",
+       p,
+       units = "in",
+       device = "png",
+       dpi = 350,
+       width = 7,
+       bg = "transparent",
+       height = 2.5)
+
+
+house_df %>%
+  filter(房屋价格 < 200000,
+         房屋面积 < 1000) %>%
+  
+  left_join(temp) %>%
+  filter(!is.na(户型)) %>%
+  ggplot() +
+  aes(x = `房屋面积`,
+      y = `房屋价格`,
+      color = 户型) +
+  
+  geom_point(#aes(color = 地段评分),
+             #position = position_jitter(w = .15, h = 0.9),
+             size = 1,
+             alpha = 0.2) +
+  geom_smooth(method = "gam", 
+              se = T,
+              formula = y ~ x, size = 1) +
+  bigy +
+  ppt_theme -> p
+p <- my_scale_fill_color(p, my_pick2)
+p
+ggsave("plot/micro/户型-3.png",
+       p,
+       units = "in",
+       device = "png",
+       dpi = 350,
+       width = 6,
+       bg = "transparent",
+       height = 3)
+
+```
+
+```{r}
+house_df %>%
+  #filter(房屋所在省 == "安徽省") %>% arrange(-房屋面积) %>% View
+  filter(房屋面积<20000) %>%
+  #filter(房屋价格<200000) %>%
+  group_by(房屋所在省) %>%
+  
+  summarise(平均房屋面积 = mean(房屋面积, na.rm =T),
+            平均房价 = mean(房屋价格, na.rm =T),
+            样本中楼盘个数 = n()) %>%
+  ggplot() +
+  aes(
+    x = 平均房屋面积,
+    y = 平均房价
+  ) + geom_point(aes(size = 样本中楼盘个数,
+                     color = 房屋所在省)) + 
+  geom_text_repel(aes(label = 房屋所在省),
+                               family = "Microsoft YaHei") + ppt_theme +
+  # scale_x_continuous(n.break = 7) +
+  guides(color = "none") +
+  ggtitle("") +
+    scale_x_continuous( labels = addUnits_cn_best,
+                     n.breaks = 9) +
+  scale_y_continuous(labels = addUnits_cn_best,
+                     n.breaks = 9) -> p
+my_scale_fill_color(p, color = rep(c(my_pick,my_pick2),2)) -> p
+p
+ggsave("plot/micro/楼盘面积与房价.png",
+       p,
+       units = "in",
+       device = "png",
+       dpi = 350,
+       width = 5.5,
+       bg = "transparent",
+       height = 4)
+```
+
+### 装修
+```{r}
+house_df %>%
+  distinct(楼盘ID, 房屋特点) %>%
+  separate_rows(房屋特点,sep = "、") %>%
+  mutate(ref = 1) %>%
+  
+  group_by(房屋特点) %>%
+  filter(sum(ref) > 5000) %>%
+  filter(!is.na(房屋特点)) %>%
+  filter(房屋特点!= "NA") %>%
+  pivot_wider(id_cols = 楼盘ID,
+              names_from = 房屋特点,
+              values_from = ref) %>%
+  left_join(house_df) -> try
+
+bind_rows(
+try %>% filter(毛坯==1) %>% mutate(装修情况="毛坯"),
+try %>% filter(带装修==1) %>% mutate(装修情况="带装修")) %>%
+  filter(房屋价格 < 200000) %>%
+  filter(!is.na(城市等级)) %>%
+  ggplot() +
+  aes(x = `城市等级`,
+      y = `房屋价格`,
+      fill = 装修情况) +
+  geom_flat_violin(position = position_nudge(x = .2, y = 0),
+                   trim = TRUE,
+                   alpha = .3,
+                   scale = "width") +
+   geom_point(aes(color = 装修情况), 
+             position = position_jitter(w = .15, h = 0.9),
+             size = 1,
+             alpha = 0.04) +
+  geom_boxplot(width = .3,
+               outlier.shape = NA,
+               alpha = 0.4) +
+  scale_y_continuous(expand = c(0, 0), 
+                 limits = c(0,130000),
+                 n.breaks = 7,
+                 labels = addUnits_cn_better) +
+  ppt_theme -> p
+my_scale_fill_color(p, my_pick2[2:5]) -> p
+ggsave("plot/micro/房屋属性-装修情况.png",
+       p,
+       units = "in",
+       device = "png",
+       dpi = 350,
+       width = 9,
+       bg = "transparent",
+       height = 4)
+```
+
+
+
+
+
+# 消费者主观考虑
+## 词云
+```{r}
+library(wordcloud2)
+review_raw %>%
+  as_tibble %>%
+  di
+wordcloud2(demoFreq,color = "random-light", word ="云",backgroundColor = "grey")
+
+letterCloud(demoFreqC, word ="云",fontFamily = "微软雅黑", wordSize = 2, color = 'random-dark')
+
+
+```
+
+```{r}
+#install.packages("jiebaR")
+#install.packages("wordcloud2")
+library(jiebaR)
+library(wordcloud2)
+
+
+
+# View(data)
+
+###delete some stop words like “的”、“得”、“地”、“着”、“了”、“地”####
+#setwd("/Users/jiajialiu/Desktop/MR 2020/Word Cloud/R solution/")
+s <- readLines('stopwords.txt')
+stopwords<-c(NULL)
+for(i in 1:length(s)){
+  stopwords[i]<-s[i]
+}
+
+
+####segment the raw text into words####
+###first segment###
+engine <- worker()
+Words <- segment(review_raw$REV_CONTENT,engine)
+# View(Words)
+tpfreq <- sort(table(Words),decreasing = T)
+tpdata = data.frame(word=names(tpfreq),freq=as.vector(tpfreq),stringsAsFactors= F)
+wordcloud2(tpdata,size = 1)
+Words2 <-  filter_segment(Words,c(stopwords,"年"))
+
+####count the frequency of each word we got#####
+freq <- sort(table(Words2),decreasing = T)
+clouddata=data.frame(word=names(freq),freq=as.vector(freq),stringsAsFactors= F)
+wordcloud2(clouddata,  size = 1.5)
+# View(clouddata)
+
+
+
+ut <- system.file("试试看.jpg",package = "wordcloud2")
+wordcloud2(demoFreq, size=0.5,figPath = "试试看.jpg" )
+
+
+letterCloud(demoFreqC, word ="R",wordSize = 2, color = 'random-dark')
+
+
+
+```
+
+
+```{r}
+engine <- worker()
+Words <- segment(review_raw %>%
+  left_join(house_df %>% select(OBJ_NUM = 楼盘ID, 房屋所在省,房屋所在市)) %>%
+  filter(房屋所在省 == "北京市") %>% 
+    select_list("REV_CONTENT"),engine)
+# View(Words)
+Words2 <-  filter_segment(Words,c(stopwords,"年"))
+freq <- sort(table(Words2),decreasing = T)
+clouddata=data.frame(word=names(freq),freq=as.vector(freq),stringsAsFactors= F)
+
+
+engine <- worker()
+Words <- segment(review_raw %>%
+  left_join(house_df %>% select(OBJ_NUM = 楼盘ID, 房屋所在省,房屋所在市)) %>%
+  filter(房屋所在省 == "上海市") %>% 
+    select_list("REV_CONTENT"),engine)
+# View(Words)
+Words2 <-  filter_segment(Words,c(stopwords,"年"))
+tibble(词语 = Words2) %>% writeEXCEL("上海词云.xlsx")
+
+engine <- worker()
+Words <- segment(review_raw %>%
+  left_join(house_df %>% select(OBJ_NUM = 楼盘ID, 房屋所在省,房屋所在市)) %>%
+  filter(房屋所在市 == "广州市") %>% 
+    select_list("REV_CONTENT"),engine)
+# View(Words)
+Words2 <-  filter_segment(Words,c(stopwords,"年"))
+tibble(词语 = Words2) %>% writeEXCEL("广州词云.xlsx")
+
+engine <- worker()
+Words <- segment(review_raw %>%
+  left_join(house_df %>% select(OBJ_NUM = 楼盘ID, 房屋所在省,房屋所在市)) %>%
+  filter(房屋所在市 == "深圳市") %>% 
+    select_list("REV_CONTENT"),engine)
+# View(Words)
+Words2 <-  filter_segment(Words,c(stopwords,"年"))
+tibble(词语 = Words2) %>% writeEXCEL("深圳词云.xlsx")
+#freq <- sort(table(Words2),decreasing = T)
+#clouddata=data.frame(word=names(freq),freq=as.vector(freq),stringsAsFactors= F)
+Words2 %>% get_DT()
+
+
+
+tpdata = data.frame(word=names(tpfreq),freq=as.vector(tpfreq),stringsAsFactors= F)
+wordcloud2(tpdata,size = 1)
+
+
+
+Words2 <-  filter_segment(Words,c(stopwords,"年"))
+
+####count the frequency of each word we got#####
+freq <- sort(table(Words2),decreasing = T)
+```
